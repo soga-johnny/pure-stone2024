@@ -1,7 +1,7 @@
 'use client';
 
-import { Canvas, useFrame, useThree } from '@react-three/fiber';
-import { OrbitControls, useGLTF, Environment, useTexture } from '@react-three/drei';
+import { Canvas, useFrame } from '@react-three/fiber';
+import { OrbitControls, useGLTF, Environment } from '@react-three/drei';
 import { useRef, useEffect, useState, Suspense, MutableRefObject, useMemo } from 'react';
 import * as THREE from 'three';
 import { EffectComposer, Bloom, Noise } from '@react-three/postprocessing';
@@ -37,6 +37,12 @@ const fragmentShader = `
   varying vec3 vNormal;
   varying vec3 vViewPosition;
 
+  // コントラスト調整関数を追加
+  vec3 adjustContrast(vec3 color, float contrast) {
+    const vec3 midpoint = vec3(0.5, 0.5, 0.5);
+    return midpoint + (color - midpoint) * (1.0 + contrast);
+  }
+
   // フレネル効果の計算
   float fresnel(vec3 viewDir, vec3 normal) {
     float F0 = 0.02;
@@ -49,23 +55,41 @@ const fragmentShader = `
     // 音の強度をより強調（全体的に抑えめに）
     float intensity = pow((bass + mid + treble) * 0.25, 0.8) * 1.2;
     
-    // 各周波数帯域の影響を強調（影響を抑えめに）
-    float bassInfluence = pow(bass, 1.4) * 1.5;
-    float midInfluence = pow(mid, 1.3) * 1.2;
-    float trebleInfluence = pow(treble, 1.5) * 1.3;
+    // 各周波数帯域の影響を個別に計算
+    float bassInfluence = pow(bass, 1.2) * 1.5;
+    float midInfluence = pow(mid, 1.1) * 1.2;
+    float trebleInfluence = pow(treble, 1.3) * 1.3;
     
-    // より動的な色相シフト（シフト量を抑えめに）
+    // より動的な色相シフト
     float hueShift = bassInfluence * 0.8 + midInfluence * 0.6 + trebleInfluence * 0.4;
     
-    // 基本色の生成をより鮮やかに
-    float r = sin(t + hueShift) * 0.4 + 0.6;
-    float g = sin(t + hueShift + 2.094) * 0.4 + 0.6;
-    float b = sin(t + hueShift + 4.189) * 0.4 + 0.6;
+    // 基本色の生成をより複雑に
+    float r = sin(t + hueShift) * 0.5 + 0.5;
+    float g = sin(t + hueShift + 2.094 + midInfluence * 0.3) * 0.5 + 0.5;
+    float b = sin(t + hueShift + 4.189 + trebleInfluence * 0.3) * 0.5 + 0.5;
     
-    // 色の彩度と明度を音の強度に応じて変化（変化を抑えめに）
-    vec3 color = vec3(r, g, b);
-    color = mix(vec3(0.4), color, intensity * 1.2);  // ベース色をより暗く
-    return color * (0.5 + intensity * 0.6);  // 発光を抑えめに
+    // 中間色の生成
+    float r2 = sin(t * 0.7 + hueShift) * 0.5 + 0.5;
+    float g2 = sin(t * 0.7 + hueShift + 2.094) * 0.5 + 0.5;
+    float b2 = sin(t * 0.7 + hueShift + 4.189) * 0.5 + 0.5;
+    
+    // 色のブレンド
+    vec3 color1 = vec3(r, g, b);
+    vec3 color2 = vec3(r2, g2, b2);
+    vec3 blendedColor = mix(color1, color2, bassInfluence * 0.5);
+    
+    // 色の彩度と明度を音の強度に応じて変化
+    vec3 finalColor = mix(vec3(0.4), blendedColor, intensity * 1.2);
+    
+    // 低音の強さに応じて暖色を強調
+    finalColor.r += bassInfluence * 0.2;
+    // 中音の強さに応じて緑を調整
+    finalColor.g += midInfluence * 0.15;
+    // 高音の強さに応じて青を調整
+    finalColor.b += trebleInfluence * 0.1;
+    
+    // 最終的な色の調整
+    return finalColor * (0.5 + intensity * 0.6);
   }
 
   // 反射光の計算
@@ -143,6 +167,9 @@ const fragmentShader = `
     // RGBシフトを適用
     vec3 shiftedColor = rgbShift(videoTexture, vUv, glitchIntensity);
     
+    // カントラストを控えめに調整
+    shiftedColor = adjustContrast(shiftedColor, 0.5);
+    
     // カラーの合成
     vec3 baseColor = mix(shiftedColor, glowColor + edgeGlow + reflection * 0.5, fresnelTerm);
     vec3 finalColor = mix(
@@ -150,6 +177,9 @@ const fragmentShader = `
       baseColor + glowColor * glitchIntensity,
       glitchIntensity * 0.5
     );
+    
+    // 最終的なカラーのコントラストも控えめに
+    finalColor = adjustContrast(finalColor, 0.1);
     
     gl_FragColor = vec4(finalColor, opacity);
   }
@@ -298,9 +328,10 @@ function StoneModel({ videoTexture, audioData, isMobile }: {
       groupRef.current.rotation.y += rotationState.current.baseSpeed.y + wobbleY;
       groupRef.current.rotation.z += rotationState.current.baseSpeed.z + wobbleZ;
 
-      // 音声の強度に応じて回転速度を微調整
-      const audioInfluence = audioData.audioLevel * 0.04;
+      // 音声の強度に応じて回転速度を微調整（影響を強める）
+      const audioInfluence = audioData.audioLevel * 0.08;  // 0.04から0.08に上げる
       groupRef.current.rotation.y += audioInfluence;
+      groupRef.current.rotation.x += audioInfluence * 0.5;  // X軸にも回転を追加
 
       // クリックアニメーションの更新
       if (clickAnimation.current.isAnimating && groupRef.current) {
@@ -441,29 +472,6 @@ function StoneModel({ videoTexture, audioData, isMobile }: {
   );
 }
 
-function Background() {
-  const texture = useTexture('/texture01.png');
-  const { viewport } = useThree();
-
-  // テクスチャの繰り返しを設定
-  texture.wrapS = texture.wrapT = THREE.RepeatWrapping;
-  texture.repeat.set(2, 2);
-
-  return (
-    <mesh position={[0, 0, -5]}>
-      <planeGeometry args={[viewport.width * 2, viewport.height * 2]} />
-      <meshBasicMaterial 
-        map={texture} 
-        transparent={true} 
-        opacity={0.8} 
-        blending={THREE.MultiplyBlending}
-        depthWrite={false}
-        color="#444444"
-      />
-    </mesh>
-  );
-}
-
 function Scene() {
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const [videoTexture, setVideoTexture] = useState<THREE.VideoTexture | null>(null);
@@ -479,7 +487,6 @@ function Scene() {
   const animationFrameRef = useRef<number>();
   const [isMobile, setIsMobile] = useState(false);
   const [fogDensity, setFogDensity] = useState(0.2);
-  const [isAppearing, setIsAppearing] = useState(true);
 
   useEffect(() => {
     const checkMobile = () => {
@@ -615,19 +622,14 @@ function Scene() {
 
     setupVideo();
 
-    // フォグとアピアランスのタイマー
+    // フォグのタイマー
     const fogTimer = setTimeout(() => {
       if (mounted) setFogDensity(0);
     }, 4000);
 
-    const appearTimer = setTimeout(() => {
-      if (mounted) setIsAppearing(false);
-    }, 3000);
-
     return () => {
       mounted = false;
       clearTimeout(fogTimer);
-      clearTimeout(appearTimer);
       
       if (animationFrameRef.current) {
         cancelAnimationFrame(animationFrameRef.current);
@@ -666,7 +668,6 @@ function Scene() {
       style={{ background: '#1a1a1a' }}
     >
       <Suspense fallback={null}>
-        <Background />
         <fog attach="fog" args={['#1a1a1a', 0, fogDensity > 0 ? 8 : 30]} />
         <ambientLight intensity={0.8} />
         <directionalLight 
@@ -699,11 +700,11 @@ function Scene() {
         )}
         <EffectComposer>
           <Bloom 
-            intensity={3.0}  // 2.0から3.0に上げる
-            luminanceThreshold={0.2}  // 0.25から0.2に下げてより発光しやすく
+            intensity={2.2}  // 3.0から2.2に下げる
+            luminanceThreshold={0.25}  // 0.2から0.25に上げて発光を抑える
             luminanceSmoothing={0.9}
             mipmapBlur
-            radius={0.8}  // 0.8から1.0に上げてより広がりのある発光に
+            radius={0.8}
           />
           <Noise 
             premultiply
@@ -715,7 +716,11 @@ function Scene() {
       <OrbitControls 
         minDistance={3}
         maxDistance={10}
-        enableZoom={!isAppearing}
+        enableZoom={false}
+        enablePan={false}
+        touches={{
+          ONE: THREE.TOUCH.ROTATE
+        }}
       />
     </Canvas>
   );
@@ -730,7 +735,7 @@ export default function Home() {
       >
         詳細
       </Link>
-      <p className="absolute bottom-4 left-4 z-10 text-white text-xs">
+      <p className="absolute bottom-4 left-4 z-10 text-white text-xs tracking-wider">
         純粋な石 | 2024.12.31 johnny.soga
       </p>
 
