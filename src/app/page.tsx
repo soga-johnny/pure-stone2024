@@ -31,7 +31,8 @@ const fragmentShader = `
   uniform float bassLevel;
   uniform float midLevel;
   uniform float trebleLevel;
-  uniform float glitchIntensity;  // グリッチの強度
+  uniform float glitchIntensity;
+  uniform float opacity;
   varying vec2 vUv;
   varying vec3 vNormal;
   varying vec3 vViewPosition;
@@ -49,9 +50,9 @@ const fragmentShader = `
     float intensity = pow((bass + mid + treble) * 0.25, 0.8) * 1.2;
     
     // 各周波数帯域の影響を強調（影響を抑えめに）
-    float bassInfluence = pow(bass, 1.2) * 1.5;
-    float midInfluence = pow(mid, 1.1) * 1.2;
-    float trebleInfluence = pow(treble, 1.3) * 1.3;
+    float bassInfluence = pow(bass, 1.4) * 1.5;
+    float midInfluence = pow(mid, 1.3) * 1.2;
+    float trebleInfluence = pow(treble, 1.5) * 1.3;
     
     // より動的な色相シフト（シフト量を抑えめに）
     float hueShift = bassInfluence * 0.8 + midInfluence * 0.6 + trebleInfluence * 0.4;
@@ -146,11 +147,11 @@ const fragmentShader = `
     vec3 baseColor = mix(shiftedColor, glowColor + edgeGlow + reflection * 0.5, fresnelTerm);
     vec3 finalColor = mix(
       baseColor,
-      baseColor + glowColor * glitchIntensity,  // グロー効果を元の値に戻す
-      glitchIntensity * 0.5  // ミックス比率を元の値に戻す
+      baseColor + glowColor * glitchIntensity,
+      glitchIntensity * 0.5
     );
     
-    gl_FragColor = vec4(finalColor, 1.0);
+    gl_FragColor = vec4(finalColor, opacity);
   }
 `;
 
@@ -171,15 +172,18 @@ function StoneModel({ videoTexture, audioData, isMobile }: {
   const currentTime = useRef(0);
   
   // デフォルトの位置を保持
-  const defaultPosition = useMemo(() => new THREE.Vector3(0, isMobile ? 0.5 : 0, 0), [isMobile]);
+  const defaultPosition = useMemo(() => {
+    const pos = new THREE.Vector3(0, isMobile ? 0.3 : 0, 0);
+    return pos;
+  }, [isMobile]);
   
   // クリックアニメーションの状態
   const clickAnimation = useRef({
     isAnimating: false,
     startTime: 0,
-    duration: 300,
+    duration: 500,
     originalPosition: defaultPosition.clone(),
-    targetPosition: new THREE.Vector3(0, 0, 0),
+    targetPosition: defaultPosition.clone(),
     glitchIntensity: 0,
   });
   
@@ -198,33 +202,82 @@ function StoneModel({ videoTexture, audioData, isMobile }: {
     }
   });
 
+  // 出現アニメーションの状態
+  const appearanceAnimation = useRef({
+    started: false,
+    startTime: 0,
+    duration: 3000,
+    fadeInDelay: 1000, // フェードインの開始を1秒遅らせる
+  });
+
+  // スケールとopacityのアニメーション状態
+  const [scale, setScale] = useState(0.001);
+  const [opacity, setOpacity] = useState(0);
+  const targetScale = useMemo(() => isMobile ? 1.8 : 2, [isMobile]);
+
+  // アニメーションフレームの参照を保持
+  const frameRef = useRef<number>();
+  
+  // コンポーネントのマウント状態を追跡
+  const mountedRef = useRef(true);
+
+  useEffect(() => {
+    appearanceAnimation.current.started = true;
+    appearanceAnimation.current.startTime = Date.now();
+
+    return () => {
+      mountedRef.current = false;
+      if (frameRef.current) {
+        cancelAnimationFrame(frameRef.current);
+      }
+    };
+  }, []);
+
   // ランダムな方向を生成する関数
   const generateRandomDirection = () => {
     const angle = Math.random() * Math.PI * 2;
     const upwardBias = Math.random() * 0.015;
-    const direction = new THREE.Vector3(
+    
+    // デフォルトの位置を基準にオフセットを計算
+    const offset = new THREE.Vector3(
       Math.cos(angle) * 0.06,
       Math.sin(angle) * 0.045 + upwardBias,
       Math.sin(angle) * 0.06
     ).normalize().multiplyScalar(0.09);
     
-    // デフォルトの位置を基準に新しい位置を計算
-    return direction.add(defaultPosition);
+    // デフォルトの位置にオフセットを加算
+    return defaultPosition.clone().add(offset);
   };
 
+  // デフォルト位置の更新を監視
+  useEffect(() => {
+    if (groupRef.current) {
+      groupRef.current.position.copy(defaultPosition);
+      clickAnimation.current.originalPosition.copy(defaultPosition);
+      clickAnimation.current.targetPosition.copy(defaultPosition);
+    }
+  }, [defaultPosition]);
+
   useFrame(({ clock }) => {
+    if (!mountedRef.current) return;
+
     currentTime.current = clock.getElapsedTime() * 1000;
     
     if (innerLightRef.current) {
       const time = clock.getElapsedTime();
-      innerLightRef.current.intensity = 2.0 + Math.sin(time * 2) * 0.5;
+      // 内部ライトの強度を音声レベルに応じて調整
+      const minIntensity = 0.5; // 最小強度を下げる
+      const maxIntensity = 2.5;
+      const audioBasedIntensity = minIntensity + (maxIntensity - minIntensity) * audioData.audioLevel;
+      innerLightRef.current.intensity = audioBasedIntensity + Math.sin(time * 2) * 0.3;
 
       if (shaderRef.current) {
         shaderRef.current.uniforms.time.value = time;
-        shaderRef.current.uniforms.audioLevel.value = audioData.audioLevel;
-        shaderRef.current.uniforms.bassLevel.value = audioData.bassLevel;
-        shaderRef.current.uniforms.midLevel.value = audioData.midLevel;
-        shaderRef.current.uniforms.trebleLevel.value = audioData.trebleLevel;
+        // 音声レベルの影響を調整（小さい音でも反応するように）
+        shaderRef.current.uniforms.audioLevel.value = Math.pow(audioData.audioLevel, 0.7); // 指数を小さくして低音量でも反応するように
+        shaderRef.current.uniforms.bassLevel.value = Math.pow(audioData.bassLevel, 0.7);
+        shaderRef.current.uniforms.midLevel.value = Math.pow(audioData.midLevel, 0.7);
+        shaderRef.current.uniforms.trebleLevel.value = Math.pow(audioData.trebleLevel, 0.7);
       }
     }
 
@@ -279,12 +332,36 @@ function StoneModel({ videoTexture, audioData, isMobile }: {
 
         if (progress >= 1) {
           clickAnimation.current.isAnimating = false;
-          // アニメーション終了時にデフォルトの位置に戻す
           groupRef.current.position.copy(defaultPosition);
           clickAnimation.current.originalPosition.copy(defaultPosition);
+          clickAnimation.current.targetPosition.copy(defaultPosition);
           if (shaderRef.current) {
             shaderRef.current.uniforms.glitchIntensity.value = 0;
           }
+        }
+      }
+    }
+
+    // 出現アニメーションの更新
+    if (appearanceAnimation.current.started) {
+      const elapsed = Date.now() - appearanceAnimation.current.startTime;
+      const delayedElapsed = Math.max(0, elapsed - appearanceAnimation.current.fadeInDelay);
+      const progress = Math.min(elapsed / appearanceAnimation.current.duration, 1);
+      const fadeProgress = Math.min(delayedElapsed / (appearanceAnimation.current.duration - appearanceAnimation.current.fadeInDelay), 1);
+      
+      if (mountedRef.current) {
+        const easeOutCubic = (x: number): number => {
+          return 1 - Math.pow(1 - x, 3);
+        };
+        
+        const currentScale = 0.001 + (targetScale - 0.001) * easeOutCubic(progress);
+        const currentOpacity = easeOutCubic(fadeProgress);
+        
+        setScale(currentScale);
+        setOpacity(currentOpacity);
+        
+        if (progress >= 1) {
+          appearanceAnimation.current.started = false;
         }
       }
     }
@@ -304,10 +381,7 @@ function StoneModel({ videoTexture, audioData, isMobile }: {
     if ((object as THREE.Mesh).isMesh) {
       const mesh = object as THREE.Mesh;
       const originalMaterial = mesh.material as THREE.MeshStandardMaterial;
-      // スマートフォンでの表示サイズを調整（1.5から1.8に変更）
-      const scale = isMobile ? 1.8 : 2;
       mesh.scale.set(scale, scale, scale);
-      // メッシュの位置はリセット（グループで制御）
       mesh.position.set(0, 0, 0);
       
       const originalNormalMap = originalMaterial.normalMap;
@@ -321,11 +395,15 @@ function StoneModel({ videoTexture, audioData, isMobile }: {
           bassLevel: { value: 0.0 },
           midLevel: { value: 0.0 },
           trebleLevel: { value: 0.0 },
-          glitchIntensity: { value: 0.0 } // グリッチ強度のuniformを追加
+          glitchIntensity: { value: 0.0 },
+          opacity: { value: opacity }
         },
         vertexShader,
-        fragmentShader,
-        transparent: false,
+        fragmentShader: fragmentShader.replace(
+          'gl_FragColor = vec4(finalColor, 1.0);',
+          'gl_FragColor = vec4(finalColor, opacity);'
+        ),
+        transparent: true,
         side: THREE.DoubleSide,
       });
       
@@ -340,19 +418,19 @@ function StoneModel({ videoTexture, audioData, isMobile }: {
       onClick={handleClick}
       onPointerOver={() => document.body.style.cursor = 'pointer'}
       onPointerOut={() => document.body.style.cursor = 'auto'}
-      position={[0, isMobile ? 0.3 : 0, 0]}
+      position={defaultPosition.clone()}
     >
       <primitive object={scene} />
       <pointLight
         ref={innerLightRef}
         position={[0, 0, 2]}
-        intensity={3.0}
+        intensity={0.3}
         distance={10}
         decay={2}
       />
       <pointLight
         position={[0, 0, -3]}
-        intensity={3.0}
+        intensity={1.5}
         distance={12}
         decay={2}
         color="#ffffff"
@@ -373,7 +451,10 @@ function Scene() {
   const audioContextRef = useRef<AudioContext | null>(null);
   const analyserRef = useRef<AnalyserNode | null>(null);
   const sourceRef = useRef<MediaStreamAudioSourceNode | null>(null);
+  const animationFrameRef = useRef<number>();
   const [isMobile, setIsMobile] = useState(false);
+  const [fogDensity, setFogDensity] = useState(0.2);
+  const [isAppearing, setIsAppearing] = useState(true);
 
   useEffect(() => {
     const checkMobile = () => {
@@ -392,33 +473,32 @@ function Scene() {
 
   useEffect(() => {
     let mounted = true;
-    let animationFrameId: number;
 
     async function setupAudioAnalysis(stream: MediaStream) {
       if (!audioContextRef.current) {
         audioContextRef.current = new AudioContext();
         analyserRef.current = audioContextRef.current.createAnalyser();
         analyserRef.current.fftSize = 2048;
-        analyserRef.current.smoothingTimeConstant = 0.5;  // 値を0.8から0.5に変更してより敏感に
+        analyserRef.current.smoothingTimeConstant = 0.5;
         
         sourceRef.current = audioContextRef.current.createMediaStreamSource(stream);
         sourceRef.current.connect(analyserRef.current);
       }
 
       const analyser = analyserRef.current;
-      if (!analyser) return;  // null チェックを追加
+      if (!analyser) return;
 
       const dataArray = new Uint8Array(analyser.frequencyBinCount);
 
       function analyzeAudio() {
-        if (!mounted || !analyser) return;  // null チェックを追加
+        if (!mounted || !analyser) return;
 
         analyser.getByteFrequencyData(dataArray);
         
         // 周波数帯域の分割をより詳細に
-        const bassRange = dataArray.slice(0, 30);    // 低音域を拡大
-        const midRange = dataArray.slice(30, 150);   // 中音域を拡大
-        const trebleRange = dataArray.slice(150, 300); // 高音域を拡大
+        const bassRange = dataArray.slice(0, 30);
+        const midRange = dataArray.slice(30, 150);
+        const trebleRange = dataArray.slice(150, 300);
 
         // 感度を上げるために係数を調整
         const bassLevel = Math.pow(bassRange.reduce((a, b) => a + b, 0) / bassRange.length / 255, 0.8);
@@ -427,13 +507,13 @@ function Scene() {
         const audioLevel = (bassLevel + midLevel + trebleLevel) / 3;
 
         setAudioData({
-          audioLevel: Math.min(audioLevel * 1.5, 1.0),  // 全体の感度を上げる
-          bassLevel: Math.min(bassLevel * 1.8, 1.0),    // 低音の感度を上げる
-          midLevel: Math.min(midLevel * 1.6, 1.0),      // 中音の感度を上げる
-          trebleLevel: Math.min(trebleLevel * 1.7, 1.0) // 高音の感度を上げる
+          audioLevel: Math.min(audioLevel * 1.5, 1.0),
+          bassLevel: Math.min(bassLevel * 1.8, 1.0),
+          midLevel: Math.min(midLevel * 1.6, 1.0),
+          trebleLevel: Math.min(trebleLevel * 1.7, 1.0)
         });
 
-        animationFrameId = requestAnimationFrame(analyzeAudio);
+        animationFrameRef.current = requestAnimationFrame(analyzeAudio);
       }
 
       analyzeAudio();
@@ -446,7 +526,11 @@ function Scene() {
         videoRef.current.playsInline = true;
         
         const stream = await navigator.mediaDevices.getUserMedia({ 
-          video: true,
+          video: {
+            facingMode: isMobile ? 'environment' : 'user',
+            width: { ideal: 1280 },
+            height: { ideal: 720 }
+          },
           audio: true 
         });
         
@@ -456,6 +540,8 @@ function Scene() {
           videoRef.current.srcObject = stream;
           await videoRef.current.play();
           
+          if (!mounted) return;
+
           const texture = new THREE.VideoTexture(videoRef.current);
           texture.colorSpace = THREE.SRGBColorSpace;
           setVideoTexture(texture);
@@ -463,26 +549,72 @@ function Scene() {
           await setupAudioAnalysis(stream);
         }
       } catch (error) {
+        if (!mounted) return;
         console.error('Error setting up video or audio:', error);
+        // フォールバック: 背面カメラが使用できない場合はフロントカメラを試す
+        if (isMobile) {
+          try {
+            const fallbackStream = await navigator.mediaDevices.getUserMedia({
+              video: {
+                facingMode: 'user',
+                width: { ideal: 1280 },
+                height: { ideal: 720 }
+              },
+              audio: true
+            });
+            
+            if (!mounted) return;
+            
+            if (videoRef.current) {
+              videoRef.current.srcObject = fallbackStream;
+              await videoRef.current.play();
+              
+              const texture = new THREE.VideoTexture(videoRef.current);
+              texture.colorSpace = THREE.SRGBColorSpace;
+              setVideoTexture(texture);
+
+              await setupAudioAnalysis(fallbackStream);
+            }
+          } catch (fallbackError) {
+            console.error('Error setting up fallback camera:', fallbackError);
+          }
+        }
       }
     }
 
     setupVideo();
 
+    // フォグとアピアランスのタイマー
+    const fogTimer = setTimeout(() => {
+      if (mounted) setFogDensity(0);
+    }, 4000);
+
+    const appearTimer = setTimeout(() => {
+      if (mounted) setIsAppearing(false);
+    }, 3000);
+
     return () => {
       mounted = false;
-      cancelAnimationFrame(animationFrameId);
-      if (sourceRef.current) {
-        sourceRef.current.disconnect();
+      clearTimeout(fogTimer);
+      clearTimeout(appearTimer);
+      
+      if (animationFrameRef.current) {
+        cancelAnimationFrame(animationFrameRef.current);
       }
-      if (audioContextRef.current) {
-        audioContextRef.current.close();
-      }
+      
       if (videoRef.current) {
         const stream = videoRef.current.srcObject as MediaStream;
         if (stream) {
           stream.getTracks().forEach(track => track.stop());
         }
+      }
+      
+      if (sourceRef.current) {
+        sourceRef.current.disconnect();
+      }
+      
+      if (audioContextRef.current) {
+        audioContextRef.current.close();
       }
     };
   }, []);
@@ -498,12 +630,13 @@ function Scene() {
         alpha: false,
         antialias: true,
         toneMapping: THREE.ACESFilmicToneMapping,
-        toneMappingExposure: 1.5
+        toneMappingExposure: 1.2
       }}
       style={{ background: '#1a1a1a' }}
     >
       <Suspense fallback={null}>
-        <ambientLight intensity={1.5} />
+        <fog attach="fog" args={['#1a1a1a', 0, fogDensity > 0 ? 8 : 30]} />
+        <ambientLight intensity={0.8} />
         <directionalLight 
           position={[3, 3, 3]}
           intensity={4.0}
@@ -534,8 +667,8 @@ function Scene() {
         )}
         <EffectComposer>
           <Bloom 
-            intensity={2.0}
-            luminanceThreshold={0.2}
+            intensity={1.5}
+            luminanceThreshold={0.3}
             luminanceSmoothing={0.9}
             mipmapBlur
             radius={0.8}
@@ -543,40 +676,22 @@ function Scene() {
           <Noise 
             premultiply
             blendFunction={BlendFunction.SOFT_LIGHT}
-            opacity={0.5}
+            opacity={0.4}
           />
         </EffectComposer>
       </Suspense>
       <OrbitControls 
         minDistance={3}
         maxDistance={10}
+        enableZoom={!isAppearing}
       />
     </Canvas>
   );
 }
 
 export default function Home() {
-  const [showPermissionDialog, setShowPermissionDialog] = useState(true);
-
   return (
     <div className="w-screen h-screen relative">
-      {showPermissionDialog && (
-        <div className="absolute top-0 left-0 w-full h-full bg-black bg-opacity-80 flex items-center justify-center z-50">
-          <div className="bg-gray-800 p-8 rounded-lg max-w-md mx-4 text-center">
-            <h2 className="text-xl mb-8">カメラとマイクの使用について</h2>
-            <p className="text-xs mb-12">
-              この作品では、カメラとマイクを使用して、周囲の映像と音に反応するインタラクティブな体験を提供します。
-            </p>
-            <button
-              onClick={() => setShowPermissionDialog(false)}
-              className="text-white px-6 py-3 rounded-full hover:bg-gray-400 transition-colors"
-            >
-              Got it
-            </button>
-          </div>
-        </div>
-      )}
-      
       <Link
         href="/about"
         className="absolute top-4 right-4 z-10 px-6 py-2 bg-black bg-opacity-20 backdrop-blur-md rounded-full text-white hover:bg-gray-800 transition-all"
