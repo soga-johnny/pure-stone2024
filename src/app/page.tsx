@@ -1,7 +1,7 @@
 'use client';
 
-import { Canvas, useFrame } from '@react-three/fiber';
-import { OrbitControls, useGLTF, Environment } from '@react-three/drei';
+import { Canvas, useFrame, ThreeEvent, useThree } from '@react-three/fiber';
+import { OrbitControls, Sky, useGLTF, Environment, useTexture } from '@react-three/drei';
 import { useRef, useEffect, useState, Suspense, MutableRefObject, useMemo } from 'react';
 import * as THREE from 'three';
 import { EffectComposer, Bloom, Noise } from '@react-three/postprocessing';
@@ -265,19 +265,19 @@ function StoneModel({ videoTexture, audioData, isMobile }: {
     
     if (innerLightRef.current) {
       const time = clock.getElapsedTime();
-      // 内部ライトの強度を音声レベルに応じて調整
-      const minIntensity = 0.5; // 最小強度を下げる
-      const maxIntensity = 2.5;
+      // 内部ライトの強度を音声レベルに応じて調整（最大強度を上げる）
+      const minIntensity = 0.5;
+      const maxIntensity = 4.0; // 2.5から4.0に上げる
       const audioBasedIntensity = minIntensity + (maxIntensity - minIntensity) * audioData.audioLevel;
       innerLightRef.current.intensity = audioBasedIntensity + Math.sin(time * 2) * 0.3;
 
       if (shaderRef.current) {
         shaderRef.current.uniforms.time.value = time;
-        // 音声レベルの影響を調整（小さい音でも反応するように）
-        shaderRef.current.uniforms.audioLevel.value = Math.pow(audioData.audioLevel, 0.7); // 指数を小さくして低音量でも反応するように
-        shaderRef.current.uniforms.bassLevel.value = Math.pow(audioData.bassLevel, 0.7);
-        shaderRef.current.uniforms.midLevel.value = Math.pow(audioData.midLevel, 0.7);
-        shaderRef.current.uniforms.trebleLevel.value = Math.pow(audioData.trebleLevel, 0.7);
+        // 音声レベルの影響を調整（より強い反応に）
+        shaderRef.current.uniforms.audioLevel.value = Math.pow(audioData.audioLevel, 0.6); // 0.7から0.6に下げてより反応しやすく
+        shaderRef.current.uniforms.bassLevel.value = Math.pow(audioData.bassLevel, 0.6);
+        shaderRef.current.uniforms.midLevel.value = Math.pow(audioData.midLevel, 0.6);
+        shaderRef.current.uniforms.trebleLevel.value = Math.pow(audioData.trebleLevel, 0.6);
       }
     }
 
@@ -439,6 +439,29 @@ function StoneModel({ videoTexture, audioData, isMobile }: {
   );
 }
 
+function Background() {
+  const texture = useTexture('/texture01.png');
+  const { viewport } = useThree();
+
+  // テクスチャの繰り返しを設定
+  texture.wrapS = texture.wrapT = THREE.RepeatWrapping;
+  texture.repeat.set(2, 2);
+
+  return (
+    <mesh position={[0, 0, -5]}>
+      <planeGeometry args={[viewport.width * 2, viewport.height * 2]} />
+      <meshBasicMaterial 
+        map={texture} 
+        transparent={true} 
+        opacity={0.8} 
+        blending={THREE.MultiplyBlending}
+        depthWrite={false}
+        color="#444444"
+      />
+    </mesh>
+  );
+}
+
 function Scene() {
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const [videoTexture, setVideoTexture] = useState<THREE.VideoTexture | null>(null);
@@ -525,14 +548,20 @@ function Scene() {
         videoRef.current.muted = true;
         videoRef.current.playsInline = true;
         
-        const stream = await navigator.mediaDevices.getUserMedia({ 
-          video: {
-            facingMode: isMobile ? 'environment' : 'user',
+        const constraints = {
+          video: isMobile ? {
+            facingMode: { exact: 'environment' },
+            width: { ideal: 1280 },
+            height: { ideal: 720 }
+          } : {
+            facingMode: 'user',
             width: { ideal: 1280 },
             height: { ideal: 720 }
           },
           audio: true 
-        });
+        };
+        
+        const stream = await navigator.mediaDevices.getUserMedia(constraints);
         
         if (!mounted) return;
         
@@ -635,6 +664,7 @@ function Scene() {
       style={{ background: '#1a1a1a' }}
     >
       <Suspense fallback={null}>
+        <Background />
         <fog attach="fog" args={['#1a1a1a', 0, fogDensity > 0 ? 8 : 30]} />
         <ambientLight intensity={0.8} />
         <directionalLight 
@@ -667,11 +697,11 @@ function Scene() {
         )}
         <EffectComposer>
           <Bloom 
-            intensity={1.5}
-            luminanceThreshold={0.3}
+            intensity={3.0}  // 2.0から3.0に上げる
+            luminanceThreshold={0.2}  // 0.25から0.2に下げてより発光しやすく
             luminanceSmoothing={0.9}
             mipmapBlur
-            radius={0.8}
+            radius={0.8}  // 0.8から1.0に上げてより広がりのある発光に
           />
           <Noise 
             premultiply
@@ -696,8 +726,11 @@ export default function Home() {
         href="/about"
         className="absolute top-4 right-4 z-10 px-6 py-2 bg-black bg-opacity-20 backdrop-blur-md rounded-full text-white hover:bg-gray-800 transition-all"
       >
-        About
+        詳細
       </Link>
+      <p className="absolute bottom-4 left-4 z-10 text-white text-xs">
+        純粋な石 | 2024.12.31 johnny.soga
+      </p>
 
       <main className="w-full h-full">
         <Scene />
