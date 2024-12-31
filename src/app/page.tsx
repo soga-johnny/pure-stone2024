@@ -1,7 +1,7 @@
 'use client';
 
-import { Canvas, useFrame, ThreeEvent, useThree } from '@react-three/fiber';
-import { OrbitControls, Sky, useGLTF, Environment, useTexture } from '@react-three/drei';
+import { Canvas, useFrame, useThree } from '@react-three/fiber';
+import { OrbitControls, useGLTF, Environment, useTexture } from '@react-three/drei';
 import { useRef, useEffect, useState, Suspense, MutableRefObject, useMemo } from 'react';
 import * as THREE from 'three';
 import { EffectComposer, Bloom, Noise } from '@react-three/postprocessing';
@@ -225,10 +225,12 @@ function StoneModel({ videoTexture, audioData, isMobile }: {
     appearanceAnimation.current.started = true;
     appearanceAnimation.current.startTime = Date.now();
 
+    const currentFrame = frameRef.current;
+
     return () => {
       mountedRef.current = false;
-      if (frameRef.current) {
-        cancelAnimationFrame(frameRef.current);
+      if (currentFrame) {
+        cancelAnimationFrame(currentFrame);
       }
     };
   }, []);
@@ -646,7 +648,7 @@ function Scene() {
         audioContextRef.current.close();
       }
     };
-  }, []);
+  }, [isMobile]);
 
   return (
     <Canvas 
